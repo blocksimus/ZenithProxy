@@ -1,0 +1,89 @@
+name: Fork Release
+
+# Builds the linux native binary for tags like 3.7.4+stonecutter+linux.1.21.4
+# and publishes it as a release. Point the launcher at this fork with
+# repo_owner in launch_config.json to install it.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+\+*\+linux.1.21.4'
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-latest
+    container:
+      image: catthehacker/ubuntu:act-22.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          version: '25.4'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Elevate wrapper permissions
+        run: chmod +x ./gradlew
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Download GraalVM Profile
+        run: |
+          wget https://cdn.2b2t.vc/profile.iprof
+          echo "GRAALVM_PGO_PATH=$(pwd)/profile.iprof" >> "$GITHUB_ENV"
+
+      - name: Build ZenithProxy Linux Native
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./gradlew nativeCompile -x test
+
+      - name: Zip Binary And Libs
+        run: |
+          chmod +x build/native/nativeCompile/*
+          zip -j ZenithProxy.zip build/native/nativeCompile/*
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: ZenithProxy.zip
+          if-no-files-found: error
+          archive: false
+
+  release:
+    needs:
+      - build-linux-amd64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # checkout turns an annotated tag into a lightweight one, which loses the release notes
+      - name: Fetch Tag Annotation
+        run: git fetch --force origin "+refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - name: Download linux artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ZenithProxy.zip
+          merge-multiple: true
+          path: artifacts/
+          skip-decompress: true
+
+      - name: Publish Linux Artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" artifacts/ZenithProxy.zip
+          --title "$GITHUB_REF_NAME" --notes-from-tag --verify-tag
